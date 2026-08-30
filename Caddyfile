@@ -1,0 +1,30 @@
+# TLS is automatic (Let's Encrypt) when PUBLIC_URL is an https:// hostname.
+# For LAN-only testing, set PUBLIC_URL=http://shelfmark.local and Caddy will
+# use its internal CA instead.
+
+{$PUBLIC_URL} {
+	encode zstd gzip
+
+	reverse_proxy web:8080 {
+		# File bodies stream through Caddy; 256 MiB covers large CBZ archives.
+		transport http {
+			read_timeout 120s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The reader iframe (sandboxed, cookieless) is served by the web app on a
+	# dedicated route with its own CSP; keep this site-wide header conservative.
+	header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'self' sandbox; connect-src 'self'"
+
+	request_body {
+		max_size 256MiB
+	}
+}

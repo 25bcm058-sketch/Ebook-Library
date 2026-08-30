@@ -1,0 +1,139 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Shelfmark — production-style self-host stack
+# Copy .env.example to .env and fill it in FIRST, then: docker compose up -d
+# Host the app behind this Caddy container, or point your own reverse proxy at
+# the `caddy` service. Never expose `web`, `db`, or `worker` ports directly.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: shelfmark
+
+services:
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    user: "1000:1000"                        # never root
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DATABASE_URL: postgres://shelfmark:${POSTGRES_PASSWORD}@db:5432/shelfmark
+      SHELFMARK_MASTER_KEY: ${SHELFMARK_MASTER_KEY}
+      BLOB_DIR: /data
+      WORKER_JWT_SECRET: ${WORKER_JWT_SECRET}
+      PUBLIC_URL: ${PUBLIC_URL}              # e.g. https://books.example.com
+    volumes:
+      - blobs:/data:ro                       # web serves blobs read-only;
+      - blobs_cache:/cache                   # thumbnails pre-baked by worker
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal]
+
+  worker:
+    build: ./worker                          # conversion, thumbnails, metadata ingest
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DATABASE_URL: postgres://shelfmark:${POSTGRES_PASSWORD}@db:5432/shelfmark
+      BLOB_DIR: /data
+      CLAMAV_HOST: clamav
+    volumes:
+      - blobs:/data
+    depends_on:
+      db: { condition: service_healthy }
+      clamav: { condition: service_started }
+    networks:
+      internal:
+        aliases: [worker.internal]
+    # Calibre's converter does not need the internet; metadata enrichment is a
+    # separate small `enrich` service that *does* and cannot touch blobs.
+    deploy:
+      resources: { limits: { cpus: "2.0", memory: 1G } }
+
+  enrich:
+    build: ./enrich                          # Open Library / Google Books fetcher
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DATABASE_URL: postgres://shelfmark:${POSTGRES_PASSWORD}@db:5432/shelfmark
+      METADATA_UA: "Shelfmark/0.1 (self-hosted; contact: ${ADMIN_EMAIL})"
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal, egress]             # ONLY service with internet access
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shelfmark
+      POSTGRES_USER: shelfmark
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shelfmark"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [internal]                     # no published ports
+
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    volumes:
+      - clamav_db:/var/lib/clamav
+      - blobs:/data:ro
+    networks: [internal, egress]             # egress for signature updates only
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web]
+    networks: [internal, egress]             # egress for Let's Encrypt ACME
+
+  backup:
+    build: ./backup                          # pg_dump + restic to $BACKUP_REPO
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DATABASE_URL: postgres://shelfmark:${POSTGRES_PASSWORD}@db:5432/shelfmark
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}    # encrypted backups, non-negotiable
+      BACKUP_CRON: "0 3 * * *"
+    volumes:
+      - blobs:/data:ro
+      - ${BACKUP_REPO:-./backups}:/repo
+    profiles: [ops]                          # docker compose --profile ops up -d backup
+    networks: [internal]
+
+volumes:
+  db_data:
+  blobs:
+  blobs_cache:
+  clamav_db:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal: { internal: true }               # no route to the internet
+  egress:   {}                               # NATed; only services that need it
