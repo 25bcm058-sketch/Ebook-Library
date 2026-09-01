@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened runtime, no App Sandbox in this scaffold: the app still
+       needs to bind a loopback TCP listener for the embedded API and read
+       arbitrary user-chosen files (import dialog), which would require
+       broad sandbox exceptions anyway. Revisit if/when this ships signed
+       for the Mac App Store. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <false/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <false/>
+</dict>
+</plist>

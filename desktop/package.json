@@ -1,0 +1,33 @@
+{
+  "name": "shelfmark-desktop",
+  "version": "0.1.0",
+  "description": "Shelfmark Desktop Edition — single-user, single-PC e-book library manager (Electron + embedded local API)",
+  "private": true,
+  "author": "Shelfmark contributors",
+  "license": "MIT",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/renderer','dist/renderer',{recursive:true})\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "npm run build && electron .",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "adm-zip": "^0.5.10",
+    "argon2": "^0.31.2",
+    "better-sqlite3": "^11.10.0",
+    "fast-xml-parser": "^4.4.1",
+    "fastify": "^4.28.1",
+    "file-type": "^16.5.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/node": "^20.14.10",
+    "electron": "^31.2.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.3"
+  }
+}

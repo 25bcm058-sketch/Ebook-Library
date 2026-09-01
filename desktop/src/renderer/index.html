@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shelfmark</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1>📚 Shelfmark <span class="badge">desktop</span></h1>
+      <div class="search">
+        <input id="search-input" type="search" placeholder="Search title, author, description…" />
+      </div>
+      <div class="actions">
+        <button id="import-btn" class="primary">Import books…</button>
+      </div>
+    </header>
+
+    <main id="drop-zone" class="content">
+      <div id="library-grid" class="grid"></div>
+      <p id="empty-state" class="empty hidden">No books yet — drag e-books here, or click "Import books…".</p>
+      <div id="drop-overlay" class="drop-overlay hidden">Drop to import</div>
+    </main>
+
+    <aside id="detail-panel" class="detail hidden">
+      <button id="detail-close" class="close">✕</button>
+      <div id="detail-cover-wrap">
+        <img id="detail-cover" alt="Cover" />
+      </div>
+      <form id="detail-form">
+        <label>Title <input name="title" /></label>
+        <label>Authors (comma-separated) <input name="authors" /></label>
+        <label>Series <input name="series" disabled placeholder="TODO: series editing" /></label>
+        <label>Publisher <input name="publisher" /></label>
+        <label>Published <input name="publishedOn" placeholder="YYYY-MM-DD" /></label>
+        <label>Language <input name="language" /></label>
+        <label>Description <textarea name="description" rows="5"></textarea></label>
+        <div class="detail-actions">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="detail-cover-btn">Change cover…</button>
+          <button type="button" id="detail-open-btn">Open in reader</button>
+          <button type="button" id="detail-delete-btn" class="danger">Delete</button>
+        </div>
+      </form>
+    </aside>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

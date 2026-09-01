@@ -1,0 +1,178 @@
+:root {
+  color-scheme: dark;
+  --bg: #111318;
+  --panel: #1a1d24;
+  --panel-2: #21252e;
+  --border: #2c313c;
+  --text: #e8eaf0;
+  --text-dim: #9aa1b0;
+  --accent: #5b8def;
+  --danger: #e25c5c;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.topbar h1 { font-size: 18px; margin: 0; display: flex; align-items: center; gap: 8px; }
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.search { flex: 1; }
+.search input {
+  width: 100%;
+  max-width: 480px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #05070c; font-weight: 600; }
+button.danger { border-color: var(--danger); color: var(--danger); }
+
+.content {
+  position: relative;
+  padding: 20px;
+  height: calc(100% - 61px);
+  overflow-y: auto;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px;
+}
+
+.book-card {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.book-card .cover {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+.book-card .title { font-size: 13px; font-weight: 600; line-height: 1.3; }
+.book-card .author { font-size: 12px; color: var(--text-dim); }
+
+.empty { color: var(--text-dim); text-align: center; margin-top: 60px; }
+.hidden { display: none !important; }
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(91, 141, 239, 0.15);
+  border: 3px dashed var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.detail {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100%;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: 20px;
+  overflow-y: auto;
+  z-index: 40;
+}
+.detail .close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+#detail-cover-wrap { margin: 20px 0 12px; }
+#detail-cover {
+  width: 160px;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+#detail-form label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 10px;
+}
+#detail-form input,
+#detail-form textarea {
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 60;
+}

@@ -1,0 +1,66 @@
+# electron-builder configuration for Shelfmark Desktop.
+# Config only — packaging is not run as part of this scaffold (see README).
+
+appId: com.shelfmark.desktop
+productName: Shelfmark
+copyright: Copyright © Shelfmark contributors
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+
+# asar packs app source into a single archive: faster startup, and it means
+# an installed copy isn't just a folder of readable/writable source files.
+asar: true
+asarUnpack:
+  # better-sqlite3's native .node binding must live outside the asar
+  # archive — native addons cannot be dlopen()'d from inside one.
+  - "**/node_modules/better-sqlite3/**"
+  - "**/node_modules/argon2/**"
+
+# No electron-updater wiring on purpose: no auto-update phone-home/telemetry
+# in this scaffold (DESIGN.md §3.3 "Telemetry: none" applies here too).
+# Wire a `publish` block + electron-updater explicitly and deliberately if
+# auto-update is added later.
+publish: null
+
+extraMetadata:
+  main: dist/main/index.js
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  artifactName: "${productName}-Setup-${version}.${ext}"
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+  category: Office
+  artifactName: "${productName}-${version}.${ext}"
+
+# Hardened defaults: don't ship devDependencies, don't run remote binary
+# downloads beyond electron/electron-builder's own (pinned) toolchain.
+npmRebuild: true
+buildDependenciesFromSource: false
