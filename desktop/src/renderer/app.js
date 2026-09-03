@@ -5,6 +5,7 @@
 
 let config = null;
 let currentBookId = null;
+let currentBook = null;
 
 async function api(pathname, options = {}) {
   const res = await fetch(config.apiUrl + pathname, {
@@ -63,8 +64,12 @@ async function loadLibrary(query = '') {
 async function openDetail(id) {
   const book = await api(`/api/books/${id}`);
   currentBookId = id;
+  currentBook = book;
   const panel = document.getElementById('detail-panel');
   panel.classList.remove('hidden');
+
+  const hasEpub = (book.files || []).some((f) => f.format === 'epub');
+  document.getElementById('detail-open-btn').textContent = hasEpub ? 'Read' : 'Open raw file';
 
   document.getElementById('detail-cover').src = `${config.apiUrl}/api/books/${id}/cover`;
   const form = document.getElementById('detail-form');
@@ -79,6 +84,7 @@ async function openDetail(id) {
 function closeDetail() {
   document.getElementById('detail-panel').classList.add('hidden');
   currentBookId = null;
+  currentBook = null;
 }
 
 async function importPaths(paths) {
@@ -169,14 +175,18 @@ async function main() {
     await loadLibrary(document.getElementById('search-input').value.trim());
   });
 
-  document.getElementById('detail-open-btn').addEventListener('click', () => {
+  document.getElementById('detail-open-btn').addEventListener('click', async () => {
     if (!currentBookId) return;
-    // TODO: real in-app reader (epub.js for reflowable EPUB, PDF.js for
-    // PDF, paged viewer for CBx) is out of scope for this scaffold — see
-    // README "Desktop vs Server edition". Opening the raw file stream in a
-    // new window is a placeholder so the "open a book" path is exercised
-    // end-to-end (including Range-request streaming) even before a reader
-    // exists.
+    const hasEpub = (currentBook?.files || []).some((f) => f.format === 'epub');
+    if (hasEpub) {
+      // Real in-app reader: a separate sandboxed BrowserWindow (book HTML
+      // never runs in this window) fed by the server-side-sanitized
+      // /api/books/:id/read endpoint. See README "In-app EPUB reader".
+      await window.shelfmark.openReader(currentBookId);
+      return;
+    }
+    // Non-EPUB formats have no in-app reader yet — fall back to streaming
+    // the raw file to a new window (also exercises Range-request support).
     window.open(`${config.apiUrl}/api/books/${currentBookId}/file`, '_blank');
   });
 

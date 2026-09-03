@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shelfmark Reader</title>
+  <link rel="stylesheet" href="/reader.css" />
+</head>
+<body data-theme="dark">
+  <header id="reader-chrome">
+    <button id="back-btn" title="Close reader and return to the library">← Library</button>
+    <div id="book-heading">
+      <span id="book-title"></span>
+      <span id="book-author"></span>
+    </div>
+    <div class="chrome-group">
+      <button id="toc-btn" title="Table of contents">☰</button>
+      <button id="bookmark-add-btn" title="Bookmark this location">🔖+</button>
+      <button id="bookmarks-btn" title="Show bookmarks">🔖</button>
+    </div>
+    <div class="chrome-group">
+      <select id="font-select" title="Font family">
+        <option value="serif">Serif</option>
+        <option value="sans">Sans</option>
+        <option value="dyslexic">Dyslexia-friendly</option>
+      </select>
+      <button id="font-dec" title="Smaller text">A−</button>
+      <button id="font-inc" title="Larger text">A+</button>
+      <button id="lh-dec" title="Tighter lines">⇅−</button>
+      <button id="lh-inc" title="Looser lines">⇅+</button>
+      <button id="margin-inc" title="Wider margins">↔+</button>
+      <button id="margin-dec" title="Narrower margins">↔−</button>
+      <select id="theme-select" title="Theme">
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="sepia">Sepia</option>
+      </select>
+    </div>
+    <span id="progress-label" title="Reading progress"></span>
+  </header>
+
+  <aside id="sidebar" class="hidden">
+    <div id="sidebar-tabs">
+      <button id="tab-toc" class="tab active">Contents</button>
+      <button id="tab-bookmarks" class="tab">Bookmarks</button>
+      <button id="sidebar-close" class="close">✕</button>
+    </div>
+    <div id="sidebar-content"></div>
+  </aside>
+
+  <main id="reader-scroll">
+    <article id="content"><!-- sanitized chapter HTML is injected here --></article>
+  </main>
+
+  <footer id="chapter-nav">
+    <button id="prev-chapter">← Previous chapter</button>
+    <span id="chapter-label"></span>
+    <button id="next-chapter">Next chapter →</button>
+  </footer>
+
+  <div id="reader-toast" class="hidden"></div>
+
+  <script src="/reader.js"></script>
+</body>
+</html>

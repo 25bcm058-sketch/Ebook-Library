@@ -23,7 +23,17 @@ import { z } from 'zod';
 import type { Db } from './db';
 import { nextId } from './db';
 import { formatFromExtension, validateMagicBytes, type BookFormat } from './magic';
-import { parseEpubMetadata, parseCbzMetadata, parseFb2Metadata, type ParsedBookMetadata } from './epub';
+import {
+  parseEpubMetadata,
+  parseCbzMetadata,
+  parseFb2Metadata,
+  readEpubStructure,
+  readEpubEntryText,
+  readEpubEntryBuffer,
+  UnsafeArchiveError,
+  type ParsedBookMetadata,
+} from './epub';
+import { sanitizeChapter } from './sanitize';
 
 export interface ServerOptions {
   db: Db;
@@ -171,6 +181,38 @@ function parseMetadataFor(format: BookFormat, filePath: string): ParsedBookMetad
 
 const importSchema = z.object({ path: z.string().min(1) });
 const coverSchema = z.object({ path: z.string().min(1) });
+const progressSchema = z
+  .object({
+    spineIndex: z.number().int().nonnegative(),
+    scrollFraction: z.number().min(0).max(1),
+    percent: z.number().min(0).max(100).optional(),
+  })
+  .strict();
+const bookmarkSchema = z
+  .object({
+    spineIndex: z.number().int().nonnegative(),
+    scrollFraction: z.number().min(0).max(1),
+    label: z.string().max(500).optional(),
+  })
+  .strict();
+
+/** Media types for files served out of an EPUB to the reader window. */
+const EPUB_MEDIA_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.svg': 'image/svg+xml', // scripts inside <img>-loaded SVG are inert (CSP + SVG image rules)
+  '.css': 'text/css',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.xhtml': 'application/xhtml+xml',
+  '.html': 'text/html',
+};
 const patchBookSchema = z
   .object({
     title: z.string().min(1).optional(),
@@ -518,6 +560,186 @@ export function buildServer(opts: ServerOptions): FastifyInstance {
     }
     reply.header('Content-Length', blob.size_bytes);
     return reply.send(fs.createReadStream(blob.storage_path));
+  });
+
+  // ── EPUB reader: sanitized chapters, media, TOC, progress, bookmarks ──
+  //
+  // All chapter content is sanitized *here*, server-side (see sanitize.ts):
+  // book XHTML is attacker-controlled input, and EPUB 3 can legally embed
+  // JavaScript. The reader window only ever receives markup that has been
+  // through sanitizeChapter(); it never fetches raw book HTML.
+
+  /** Locates the stored EPUB blob for a book, or null when it has none. */
+  function epubPathForBook(id: string): string | null {
+    const file = db
+      .prepare(`SELECT blob_sha256 FROM book_files WHERE book_id = ? AND format = 'epub'`)
+      .get(id) as { blob_sha256: string } | undefined;
+    if (!file) return null;
+    const blob = db.prepare('SELECT storage_path FROM blobs WHERE sha256 = ?').get(file.blob_sha256) as
+      | { storage_path: string }
+      | undefined;
+    if (!blob || !fs.existsSync(blob.storage_path)) return null;
+    return blob.storage_path;
+  }
+
+  /** Spine + table of contents for the reader. */
+  app.get('/api/books/:id/toc', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const epubPath = epubPathForBook(id);
+    if (!epubPath) return reply.code(404).send({ error: 'no_epub_file' });
+    try {
+      const structure = readEpubStructure(epubPath);
+      return reply.send({
+        spine: structure.spine.map((s, i) => ({ index: i, href: s.href, mediaType: s.mediaType })),
+        toc: structure.toc,
+      });
+    } catch (err) {
+      if (err instanceof UnsafeArchiveError) return reply.code(422).send({ error: 'unsafe_or_invalid_archive', reason: err.message });
+      throw err;
+    }
+  });
+
+  /** One spine chapter, sanitized and with media URLs rewritten. */
+  app.get('/api/books/:id/read/:spineIndex', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id, spineIndex: spineIndexRaw } = req.params as { id: string; spineIndex: string };
+    const epubPath = epubPathForBook(id);
+    if (!epubPath) return reply.code(404).send({ error: 'no_epub_file' });
+
+    const spineIndex = Number.parseInt(spineIndexRaw, 10);
+    if (!Number.isInteger(spineIndex) || spineIndex < 0) {
+      return reply.code(400).send({ error: 'invalid_spine_index' });
+    }
+
+    try {
+      const structure = readEpubStructure(epubPath);
+      const item = structure.spine[spineIndex];
+      if (!item) return reply.code(404).send({ error: 'spine_index_out_of_range' });
+      if (item.mediaType && item.mediaType !== 'application/xhtml+xml' && item.mediaType !== 'text/html') {
+        return reply.code(415).send({ error: 'not_a_content_document' });
+      }
+      const xhtml = readEpubEntryText(epubPath, item.href);
+      if (xhtml === null) return reply.code(404).send({ error: 'chapter_missing_in_archive' });
+
+      const html = sanitizeChapter(xhtml, { bookId: id, chapterPath: item.href });
+      return reply.send({ index: spineIndex, href: item.href, spineCount: structure.spine.length, html });
+    } catch (err) {
+      if (err instanceof UnsafeArchiveError) return reply.code(422).send({ error: 'unsafe_or_invalid_archive', reason: err.message });
+      throw err;
+    }
+  });
+
+  /**
+   * Media (images/fonts/css) referenced by sanitized chapters. The src is a
+   * zip-entry path *we* generated during sanitization (never a client
+   * filename); readEpubEntryBuffer re-checks it against the zip-slip guard
+   * before reading. `<img>` tags can't send the bearer token, so the reader
+   * JS fetches these with fetch()+Authorization and swaps in blob: URLs.
+   */
+  app.get('/api/books/:id/media/*', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const entryPath = (req.params as Record<string, string>)['*'] ?? '';
+    const epubPath = epubPathForBook(id);
+    if (!epubPath) return reply.code(404).send({ error: 'no_epub_file' });
+
+    try {
+      const buf = readEpubEntryBuffer(epubPath, entryPath);
+      if (!buf) return reply.code(404).send({ error: 'media_not_found' });
+      const ext = path.extname(entryPath).toLowerCase();
+      reply.header('Content-Type', EPUB_MEDIA_TYPES[ext] ?? 'application/octet-stream');
+      reply.header('Cache-Control', 'private, max-age=3600');
+      reply.header('X-Content-Type-Options', 'nosniff');
+      return reply.send(buf);
+    } catch (err) {
+      if (err instanceof UnsafeArchiveError) return reply.code(422).send({ error: 'unsafe_or_invalid_archive', reason: err.message });
+      throw err;
+    }
+  });
+
+  // ── reading progress (EPUB locator JSON in reading_progress.locator) ──
+  app.get('/api/books/:id/progress', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const row = db
+      .prepare('SELECT locator, percent, status, updated_at FROM reading_progress WHERE book_id = ?')
+      .get(id) as { locator: string | null; percent: number; status: string; updated_at: string } | undefined;
+    if (!row) return reply.send({ progress: null });
+
+    let spineIndex = 0;
+    let scrollFraction = 0;
+    if (row.locator) {
+      try {
+        const loc = JSON.parse(row.locator) as { spineIndex?: number; scrollFraction?: number };
+        spineIndex = typeof loc.spineIndex === 'number' ? loc.spineIndex : 0;
+        scrollFraction = typeof loc.scrollFraction === 'number' ? loc.scrollFraction : 0;
+      } catch {
+        /* legacy/non-JSON locator: treat as start-of-book */
+      }
+    }
+    return reply.send({
+      progress: { spineIndex, scrollFraction, percent: row.percent, status: row.status, updatedAt: row.updated_at },
+    });
+  });
+
+  app.put('/api/books/:id/progress', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const book = db.prepare('SELECT id FROM books WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!book) return reply.code(404).send({ error: 'not_found' });
+
+    const parsed = progressSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', details: parsed.error.issues });
+
+    const { spineIndex, scrollFraction, percent } = parsed.data;
+    const locator = JSON.stringify({ spineIndex, scrollFraction });
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO reading_progress (book_id, status, locator, percent, updated_at)
+       VALUES (?, 'reading', ?, ?, ?)
+       ON CONFLICT(book_id) DO UPDATE SET
+         locator = excluded.locator,
+         percent = excluded.percent,
+         status = CASE WHEN excluded.percent >= 99.5 THEN 'finished' ELSE 'reading' END,
+         updated_at = excluded.updated_at`,
+    ).run(id, locator, percent ?? 0, now);
+    return reply.send({ ok: true, updatedAt: now });
+  });
+
+  // ── bookmarks ───────────────────────────────────────────────────────
+  app.get('/api/books/:id/bookmarks', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const rows = db
+      .prepare(
+        `SELECT id, spine_index AS spineIndex, scroll_fraction AS scrollFraction, label, created_at AS createdAt
+         FROM bookmarks WHERE book_id = ? ORDER BY spine_index, scroll_fraction`,
+      )
+      .all(id);
+    return reply.send({ bookmarks: rows });
+  });
+
+  app.post('/api/books/:id/bookmarks', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const book = db.prepare('SELECT id FROM books WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!book) return reply.code(404).send({ error: 'not_found' });
+
+    const parsed = bookmarkSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', details: parsed.error.issues });
+
+    const bookmarkId = nextId();
+    db.prepare(
+      `INSERT INTO bookmarks (id, book_id, spine_index, scroll_fraction, label) VALUES (?, ?, ?, ?, ?)`,
+    ).run(bookmarkId, id, parsed.data.spineIndex, parsed.data.scrollFraction, parsed.data.label ?? null);
+    const row = db
+      .prepare(
+        `SELECT id, spine_index AS spineIndex, scroll_fraction AS scrollFraction, label, created_at AS createdAt
+         FROM bookmarks WHERE id = ?`,
+      )
+      .get(bookmarkId);
+    return reply.code(201).send(row);
+  });
+
+  app.delete('/api/books/:id/bookmarks/:bookmarkId', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id, bookmarkId } = req.params as { id: string; bookmarkId: string };
+    const result = db.prepare('DELETE FROM bookmarks WHERE id = ? AND book_id = ?').run(bookmarkId, id);
+    if (result.changes === 0) return reply.code(404).send({ error: 'not_found' });
+    return reply.code(204).send();
   });
 
   // ── duplicate lookup (used by the UI before/independent of import) ──

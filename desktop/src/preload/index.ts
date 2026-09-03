@@ -20,6 +20,13 @@ const api = {
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke('shelfmark:get-app-info'),
   pickFiles: (): Promise<string[]> => ipcRenderer.invoke('shelfmark:pick-files'),
   pickImage: (): Promise<string | null> => ipcRenderer.invoke('shelfmark:pick-image'),
+  /**
+   * Opens the separate, sandboxed reader BrowserWindow for a book.
+   * Used by the library window; the reader window itself uses this same
+   * preload (it needs getConfig() for the API URL + bearer token).
+   */
+  openReader: (bookId: string): Promise<{ opened: boolean }> =>
+    ipcRenderer.invoke('shelfmark:open-reader', bookId),
 };
 
 export type ShelfmarkBridge = typeof api;

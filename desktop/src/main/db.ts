@@ -149,6 +149,8 @@ export function migrate(db: Db): void {
     );
 
     -- Single user, so no user_id column — one row per book (+ optional file).
+    -- For the EPUB reader, locator holds a JSON object of the form:
+    --   {"spineIndex": int, "scrollFraction": 0..1}
     CREATE TABLE IF NOT EXISTS reading_progress (
       book_id    TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
       file_id    TEXT REFERENCES book_files(id) ON DELETE SET NULL,
@@ -158,6 +160,18 @@ export function migrate(db: Db): void {
       percent    REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- EPUB reader bookmarks: a position is (spine_index, scroll_fraction),
+    -- matching the locator JSON shape used by reading_progress.
+    CREATE TABLE IF NOT EXISTS bookmarks (
+      id              TEXT PRIMARY KEY,
+      book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      spine_index     INTEGER NOT NULL,
+      scroll_fraction REAL NOT NULL DEFAULT 0,
+      label           TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS bookmarks_book_idx ON bookmarks (book_id);
 
     -- Key/value app settings: optional app-lock password (argon2id hash),
     -- auto-lock timeout, last-used window bounds, etc.

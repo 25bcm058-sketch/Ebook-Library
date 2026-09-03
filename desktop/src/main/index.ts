@@ -16,6 +16,7 @@ import { buildServer } from './server';
 import type { FastifyInstance } from 'fastify';
 
 let mainWindow: BrowserWindow | null = null;
+const readerWindows = new Set<BrowserWindow>();
 let db: Db | null = null;
 let server: FastifyInstance | null = null;
 let appInfo: { apiUrl: string; token: string; version: string } | null = null;
@@ -96,6 +97,38 @@ async function main(): Promise<void> {
       filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }],
     });
     return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+
+  // Reader window: opens a *separate*, identically hardened BrowserWindow
+  // for in-book reading. Book HTML is attacker-controlled input (EPUB 3 can
+  // embed JavaScript), so it must never execute in the library window: the
+  // reader window only ever renders chapters that the API has already
+  // sanitized server-side (see sanitize.ts / server.ts /api/books/:id/read).
+  // The token reaches the reader exactly the same way it reaches the
+  // library window — via the same preload's getConfig() over contextBridge,
+  // never in the URL. The (non-secret) book id goes in the query string.
+  ipcMain.handle('shelfmark:open-reader', async (_event, bookId: string) => {
+    if (!appInfo || typeof bookId !== 'string' || bookId.length === 0) return { opened: false };
+    const readerWindow = new BrowserWindow({
+      width: 1024,
+      height: 820,
+      minWidth: 640,
+      minHeight: 480,
+      title: 'Shelfmark Reader',
+      backgroundColor: '#111318',
+      webPreferences: {
+        preload: path.join(__dirname, '..', 'preload', 'index.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        spellcheck: false,
+      },
+    });
+    readerWindow.setMenuBarVisibility(false);
+    readerWindows.add(readerWindow);
+    readerWindow.on('closed', () => readerWindows.delete(readerWindow));
+    await readerWindow.loadURL(`${appInfo.apiUrl}/reader.html?book=${encodeURIComponent(bookId)}`);
+    return { opened: true };
   });
 
   // Strict CSP: the page may only talk to our own loopback API. No remote

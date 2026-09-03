@@ -25,6 +25,7 @@
 import AdmZip from 'adm-zip';
 import { XMLParser } from 'fast-xml-parser';
 import fs from 'node:fs';
+import { resolveZipPath, zipDirOf } from './sanitize';
 
 const MAX_ENTRIES = 10_000;
 const MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024; // 512 MiB
@@ -219,4 +220,218 @@ export function parseFb2Metadata(filePath: string): ParsedBookMetadata {
     language: textOf(titleInfo.lang),
     identifiers: [],
   };
+}
+
+// ── Reader support: spine, table of contents, raw entry access ────────
+// Everything below reuses the same openZipSafely() guards as metadata
+// extraction — reader content is exactly as untrusted as metadata.
+
+export interface EpubSpineItem {
+  /** Manifest id of the item. */
+  id: string;
+  /** Zip-entry path (already resolved against the OPF directory). */
+  href: string;
+  mediaType: string;
+}
+
+export interface EpubTocItem {
+  label: string;
+  /** Zip-entry path, possibly with a "#fragment" suffix. '' when the entry had no usable link. */
+  href: string;
+  children: EpubTocItem[];
+}
+
+export interface EpubStructure {
+  opfPath: string;
+  opfDir: string;
+  spine: EpubSpineItem[];
+  toc: EpubTocItem[];
+}
+
+interface ManifestItem {
+  href: string; // resolved zip-entry path
+  mediaType: string;
+  properties: string;
+}
+
+interface OpfContext {
+  zip: AdmZip;
+  opfPath: string;
+  opfDir: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  opf: any;
+  manifest: Map<string, ManifestItem>;
+}
+
+/** Shared container.xml → OPF resolution used by both metadata and reader paths. */
+function loadOpfContext(zip: AdmZip): OpfContext {
+  const containerXml = readEntryText(zip, 'META-INF/container.xml');
+  if (!containerXml) throw new UnsafeArchiveError('EPUB is missing META-INF/container.xml.');
+  const container = xmlParser.parse(containerXml);
+  const rootfile = container?.container?.rootfiles?.rootfile;
+  const opfPath: string | undefined = Array.isArray(rootfile)
+    ? rootfile[0]?.['@_full-path']
+    : rootfile?.['@_full-path'];
+  if (!opfPath || !isSafeEntryName(opfPath)) {
+    throw new UnsafeArchiveError('EPUB container.xml has no safe rootfile reference.');
+  }
+
+  const opfXml = readEntryText(zip, opfPath);
+  if (!opfXml) throw new UnsafeArchiveError(`EPUB OPF not found at "${opfPath}".`);
+  const opf = xmlParser.parse(opfXml);
+
+  const opfDir = zipDirOf(opfPath);
+  const manifest = new Map<string, ManifestItem>();
+  for (const item of toArray(opf?.package?.manifest?.item)) {
+    const id = item?.['@_id'];
+    const href = item?.['@_href'];
+    if (!id || !href) continue;
+    const resolved = resolveZipPath(opfDir, String(href));
+    if (!resolved || !isSafeEntryName(resolved)) continue;
+    manifest.set(String(id), {
+      href: resolved,
+      mediaType: String(item?.['@_media-type'] ?? ''),
+      properties: String(item?.['@_properties'] ?? ''),
+    });
+  }
+
+  return { zip, opfPath, opfDir, opf, manifest };
+}
+
+/** Reads the spine (reading order) + TOC from an EPUB, archive-guarded. */
+export function readEpubStructure(filePath: string): EpubStructure {
+  const zip = openZipSafely(filePath);
+  const ctx = loadOpfContext(zip);
+
+  const spine: EpubSpineItem[] = [];
+  for (const itemref of toArray(ctx.opf?.package?.spine?.itemref)) {
+    const idref = itemref?.['@_idref'];
+    if (!idref) continue;
+    const item = ctx.manifest.get(String(idref));
+    if (!item) continue;
+    spine.push({ id: String(idref), href: item.href, mediaType: item.mediaType });
+  }
+
+  const toc = readEpubToc(ctx) ?? spineTocFallback(spine);
+  return { opfPath: ctx.opfPath, opfDir: ctx.opfDir, spine, toc };
+}
+
+/** Reads one zip entry as UTF-8 text, path-traversal-guarded. For reader chapter/media serving. */
+export function readEpubEntryText(filePath: string, entryPath: string): string | null {
+  if (!isSafeEntryName(entryPath)) return null;
+  const zip = openZipSafely(filePath);
+  return readEntryText(zip, entryPath);
+}
+
+/** Reads one zip entry as a buffer, path-traversal-guarded. For reader media serving. */
+export function readEpubEntryBuffer(filePath: string, entryPath: string): Buffer | null {
+  if (!isSafeEntryName(entryPath)) return null;
+  const zip = openZipSafely(filePath);
+  return readEntryBuffer(zip, entryPath);
+}
+
+/** EPUB 3 nav document first, EPUB 2 NCX second; null when neither exists. */
+function readEpubToc(ctx: OpfContext): EpubTocItem[] | null {
+  for (const item of ctx.manifest.values()) {
+    if (item.properties.split(/\s+/).includes('nav') && item.mediaType === 'application/xhtml+xml') {
+      const xml = readEntryText(ctx.zip, item.href);
+      if (!xml) continue;
+      const doc = xmlParser.parse(xml);
+      const nav = findTocNav(doc);
+      if (nav) {
+        const items = navListToToc(nav, zipDirOf(item.href));
+        if (items.length > 0) return items;
+      }
+    }
+  }
+
+  for (const item of ctx.manifest.values()) {
+    if (item.mediaType === 'application/x-dtbncx+xml') {
+      const xml = readEntryText(ctx.zip, item.href);
+      if (!xml) continue;
+      const doc = xmlParser.parse(xml);
+      const items = ncxPointsToToc(doc?.ncx?.navMap?.navPoint, zipDirOf(item.href));
+      if (items.length > 0) return items;
+    }
+  }
+
+  return null;
+}
+
+/** Depth-first search for the <nav epub:type="toc"> element in a parsed nav document. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function findTocNav(node: any): any | null {
+  if (!node || typeof node !== 'object') return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findTocNav(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  if ('nav' in node) {
+    for (const nav of toArray(node.nav)) {
+      const type = String(nav?.['@_epub:type'] ?? nav?.['@_type'] ?? '');
+      if (type.split(/\s+/).includes('toc')) return nav;
+      const found = findTocNav(nav);
+      if (found) return found;
+    }
+  }
+  for (const key of ['html', 'body', 'section', 'div']) {
+    if (key in node) {
+      const found = findTocNav(node[key]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function navListToToc(nav: any, baseDir: string): EpubTocItem[] {
+  return olToToc(nav?.ol, baseDir);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function olToToc(ol: any, baseDir: string): EpubTocItem[] {
+  if (!ol) return [];
+  const items: EpubTocItem[] = [];
+  for (const li of toArray(ol.li)) {
+    const anchor = li?.a;
+    const label = textOf(anchor) ?? textOf(li?.span) ?? 'Untitled';
+    const rawHref = anchor?.['@_href'];
+    let href = '';
+    if (rawHref) {
+      const resolved = resolveZipPath(baseDir, String(rawHref));
+      const fragment = String(rawHref).includes('#') ? `#${String(rawHref).split('#').slice(1).join('#')}` : '';
+      if (resolved !== null && resolved !== '') href = resolved + fragment;
+    }
+    items.push({ label, href, children: olToToc(li?.ol, baseDir) });
+  }
+  return items;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ncxPointsToToc(navPoints: any, baseDir: string): EpubTocItem[] {
+  const items: EpubTocItem[] = [];
+  for (const point of toArray(navPoints)) {
+    const label = textOf(point?.navLabel?.text) ?? 'Untitled';
+    const rawSrc = point?.content?.['@_src'];
+    let href = '';
+    if (rawSrc) {
+      const resolved = resolveZipPath(baseDir, String(rawSrc));
+      const fragment = String(rawSrc).includes('#') ? `#${String(rawSrc).split('#').slice(1).join('#')}` : '';
+      if (resolved !== null && resolved !== '') href = resolved + fragment;
+    }
+    items.push({ label, href, children: ncxPointsToToc(point?.navPoint, baseDir) });
+  }
+  return items;
+}
+
+/** Books with no nav/NCX at all: one TOC entry per spine document. */
+function spineTocFallback(spine: EpubSpineItem[]): EpubTocItem[] {
+  return spine.map((item, i) => ({
+    label: item.href.split('/').pop() ?? `Section ${i + 1}`,
+    href: item.href,
+    children: [],
+  }));
 }
